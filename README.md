@@ -1,3 +1,8 @@
+# TODOs
+- [ ] Download data
+- [ ] Add wandb support
+- [ ] Replicate paper results
+      
 # Frozen️ in Time ❄️️️️️⏳
 A Joint Video and Image Encoder for End-to-End Retrieval
 ----
