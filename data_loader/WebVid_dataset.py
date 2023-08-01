@@ -22,7 +22,7 @@ class WebVid(TextVideoDataset):
         metadata_fp = os.path.join(metadata_dir, f'results_{self.cut}_{self.split}.csv')
         metadata = pd.read_csv(metadata_fp)
 
-        if self.subsample < 1:
+        if self.subsample < 1 or self.split == 'val':
             metadata = metadata.sample(frac=self.subsample)
         elif self.split == 'val':
             metadata = metadata.sample(1000, random_state=0)  # 15k val is unnecessarily large, downsample.

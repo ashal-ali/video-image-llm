@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 from torch import nn
-from tqdm.auto import tqdm
+from tqdm import tqdm
 
 from base import BaseTrainer
 from model.model import sim_matrix
@@ -21,6 +21,7 @@ class Trainer(BaseTrainer):
                  visualizer=None, tokenizer=None, max_samples_per_epoch=50000):
         super().__init__(model, loss, metrics, optimizer, config, writer)
         self.config = config
+        self.wandb = config['trainer']['wandb']
         self.data_loader = data_loader
         if len_epoch is None:
             # epoch-based training
@@ -42,11 +43,17 @@ class Trainer(BaseTrainer):
         self.max_samples_per_epoch = max_samples_per_epoch
 
     def _eval_metrics(self, output):
+        log_dict = {}
         acc_metrics = np.zeros(len(self.metrics))
         for i, metric in enumerate(self.metrics):
             acc_metrics[i] += metric(output)
             if self.writer is not None:
-                self.writer.log_scalar('{}'.format(metric.__name__), acc_metrics[i])
+                if self.wandb:
+                    log_dict['{}'.format(metric.__name__)] = acc_metrics[i]
+                else:
+                    self.writer.log_scalar('{}'.format(metric.__name__), acc_metrics[i])
+        if self.wandb:
+            self.writer(log_dict)
         return acc_metrics
 
     def _train_epoch(self, epoch):
@@ -65,6 +72,17 @@ class Trainer(BaseTrainer):
 
             The metrics in log must have the key 'metrics'.
         """
+
+        # Note: Due to the large dataset size, the code has been modified as follows:
+        # max_samples_per_epoch: maximum number of samples before validation
+        # Here, epoch is rather used as a number of iterations rather than viewing each of the data once
+        
+        # Shuffle order of data at the beginning of the epoch
+        # Thus, when we train for each epoch new data is seen every time
+
+        for dl in self.data_loader:
+            dl.dataset.shuffle_order()
+
         self.model.train()
         total_loss = [0] * len(self.data_loader)
         total_iterations = self.max_samples_per_epoch // self.total_batch_sum + 1
@@ -90,7 +108,10 @@ class Trainer(BaseTrainer):
                     detached_loss = loss.detach().item()
 
                     if self.writer is not None:
-                        self.writer.log_scalar(f'loss_train_{dl_idx}', detached_loss)
+                        if self.wandb:
+                            self.writer({f'loss_train_{dl_idx}': detached_loss})
+                        else:    
+                            self.writer.log_scalar(f'loss_train_{dl_idx}', detached_loss)
 
                     total_loss[dl_idx] += detached_loss
 
@@ -112,7 +133,7 @@ class Trainer(BaseTrainer):
         if self.lr_scheduler is not None:
             self.lr_scheduler.step()
 
-        return log
+        return log, batch_idx
 
     def _valid_epoch(self, epoch):
         """
@@ -163,11 +184,16 @@ class Trainer(BaseTrainer):
                     sims_batch = sim_matrix(text_embed, vid_embed)
                     loss = self.loss(sims_batch)
                     total_val_loss[dl_idx] += loss.item()
-
+        if self.wandb:
+            log_dict = {}
         for dl_idx in range(len(self.valid_data_loader)):
             # TODO: this needs a clean
+
             if self.writer is not None:
-                self.writer.log_scalar(f'loss_val_{dl_idx}',
+                if self.wandb:
+                    log_dict[f'loss_val_{dl_idx}'] = total_val_loss[dl_idx] / len(self.valid_data_loader[dl_idx])
+                else:    
+                    self.writer.log_scalar(f'loss_val_{dl_idx}',
                                        total_val_loss[dl_idx] / len(self.valid_data_loader[dl_idx]))
             nested_metrics = {x: {} for x in range(len(self.valid_data_loader))}
 
@@ -185,8 +211,11 @@ class Trainer(BaseTrainer):
                 if self.writer is not None:
                     to_write = format_nested_metrics_for_writer(res, mode=metric_name,
                                                                 name=self.valid_data_loader[dl_idx].dataset_name)
-                    for key, val in to_write.items():
-                        self.writer.log_scalar(key, val)
+                    if self.wandb:
+                        log_dict.update(to_write)
+                    else:
+                        for key, val in to_write.items():
+                            self.writer.log_scalar(key, val)
 
                 if self.visualizer is not None:
                     meta_arr_cat = {key: [] for key in meta_arr[0]}
@@ -198,7 +227,8 @@ class Trainer(BaseTrainer):
         res_dict = {f'val_loss_{dl_idx}': total_val_loss[dl_idx] / len(self.valid_data_loader[dl_idx])
                     for dl_idx in range(len(self.valid_data_loader))}
         res_dict['nested_val_metrics'] = nested_metrics
-
+        if self.wandb:
+            self.writer(log_dict)
         return res_dict
 
     def _progress(self, batch_idx, dl_idx):

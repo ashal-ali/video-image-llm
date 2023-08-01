@@ -26,6 +26,7 @@ class BaseTrainer:
 
         cfg_trainer = config['trainer']
         self.epochs = cfg_trainer['epochs']
+        self.debugging = cfg_trainer.get('debugging', False)
         self.save_period = cfg_trainer['save_period']
         self.monitor = cfg_trainer.get('monitor', 'off')
         self.init_val = cfg_trainer.get('init_val', True)
@@ -82,9 +83,7 @@ class BaseTrainer:
 
         for epoch in range(self.start_epoch, self.epochs + 1):
             result = self._train_epoch(epoch)
-
-            # save logged informations into log dict
-
+            
             # save logged informations into log dict
             log = {'epoch': epoch}
             for key, value in result.items():
@@ -132,7 +131,8 @@ class BaseTrainer:
                                      "Training stops.".format(self.early_stop))
                     break
 
-            if epoch % self.save_period == 0 or best:
+            if not self.debugging and (epoch % self.save_period == 0 or best):
+                #import pdb; pdb.set_trace()
             #if best:
                 self._save_checkpoint(epoch, save_best=best)
 

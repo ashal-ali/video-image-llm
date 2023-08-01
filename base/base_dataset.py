@@ -43,10 +43,15 @@ class TextVideoDataset(Dataset):
         self.video_reader = video_reader[reader]
         self.label_type = 'caption'
         self._load_metadata()
+        self.shuffle_order()
         if self.sliding_window_stride != -1:
             if self.split != 'test':
                 raise ValueError('Fixing frame sampling is for test time only. can remove but...')
             self._fix_temporal_samples()
+
+    def shuffle_order(self):
+        self.order = np.arange(len(self.metadata))
+        np.random.shuffle(self.order)
 
     @abstractmethod
     def _load_metadata(self):
@@ -81,6 +86,7 @@ class TextVideoDataset(Dataset):
 
     def __getitem__(self, item):
         item = item % len(self.metadata)
+        item = self.order[item]
         sample = self.metadata.iloc[item]
         video_fp, rel_fp = self._get_video_path(sample)
         caption = self._get_caption(sample)
@@ -124,6 +130,7 @@ class TextImageDataset(TextVideoDataset):
 
     def __getitem__(self, item):
         item = item % len(self.metadata)
+        item = self.order[item]
         sample = self.metadata.iloc[item]
         video_fp, rel_fp = self._get_video_path(sample)
         caption = self._get_caption(sample)

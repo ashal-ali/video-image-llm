@@ -85,7 +85,7 @@ def run():
     vid_mask_arr = []
     print(len(data_loader))
     with torch.no_grad():
-        for i, data_og in tqdm(tqdm(enumerate(data_loader))):
+        for i, data_og in tqdm(enumerate(data_loader), total=len(data_loader)):
             # leave this for now since not doing anything on the gpu
             data = copy.deepcopy(data_og)
             del data_og

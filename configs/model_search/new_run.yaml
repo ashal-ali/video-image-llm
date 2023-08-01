@@ -1,0 +1,128 @@
+# use: amlt run amlt_16gpu_clip_run.yaml
+description: 16 V100 CLIP
+
+target:
+  service: amlk8s
+  # run "amlt target list amlk8s" to list the names of available AMLK8s targets
+  # run "amlt target info amlk8s" to list information about available AMLK8s targets
+  name: itphyperdgx2cl1 #itplabrr1cl1 #itphyperdgx2cl1 #itplabrr1cl1 
+  vc: hai5 #resrchvc #hai5 #resrchvc
+
+environment:
+  image: images/video-image-llm:v5 # azureml/openmpi4.1.0-cuda11.1-cudnn8-ubuntu20.04:latest #pytorch/pytorch:1.9.1-cuda11.1-cudnn8-devel
+  #registry: docker.io # any public registry can be specified here
+  username: zaneml
+  registry: zaneml.azurecr.io
+  #conda_yaml_file: $CONFIG_DIR/video-image-llm/environment.yaml
+  setup:
+    # - ls
+    # - conda env list
+    # - conda list
+     - pip install wandb
+     - export GIT_PYTHON_REFRESH=quiet
+    # - bash /usr/share/blobfuse/blobfuse-mount.sh
+     - mkdir /mnt/datasets_mnt/
+    # - mkdir /home/t-zadurante/mnt/datasets_mnt/output
+    # - blobfuse /home/t-zadurante/mnt/datasets_mnt --tmp-path=/home/t-zadurante/mnt/tmp  --config-file=connection.cfg -o attr_timeout=240 -o entry_timeout=240 -o negative_timeout=120 
+    #- mkdir /home/t-zadurante/mnt/datsets_mnt/tmp
+    # - cat /etc/os-release
+    #- apt-get install blobfuse
+  #  - pip install GitPython
+  #  - conda activate video-image-llm
+  #  - ls
+  #  - ls /tmp/amlt_code/
+  # - conda env create --file environment.yaml
+  #  - conda init bash
+  #  - conda activate frozen
+
+code:
+  # local directory of the code. this will be uploaded to the server.
+  # $CONFIG_DIR is expanded to the directory of this config file
+  local_dir: $CONFIG_DIR/video-image-llm
+
+# data:
+#  storage_id: external
+
+#storage:
+#  output:
+#    storage_account_name: zane
+#    container_name: data
+#  external:
+#    storage_account_name: zane
+#    container_name: data
+#    mount_dir: /home/t-zadurante/mnt/datsets_mnt
+storage:
+  datasets: 
+    storage_account_name: zane
+    container_name: data
+    mount_dir: /mnt/datasets_mnt
+    mount_options: ["-o", "attr_timeout=240", "-o", "entry_timeout=240", "-o", "negative_timeout=120", "-o", "allow_other"]
+    local_dir: /home/t-zadurante/mnt/datasets_mnt
+    # -o attr_timeout=240 -o entry_timeout=240 -o negative_timeout=120 -o allow_other
+
+# list of jobs to run, we run 2 jobs in this example
+jobs:
+- name: i21k_vit-frozen-distilbert-frozen
+  sku: G16
+  command:
+  - python train.py --config configs/model_search/i21k_vit-frozen-distilbert-frozen.json
+- name: i21k_vit-frozen-distilbert-init
+  sku: G16
+  command:
+  - python train.py --config configs/model_search/i21k_vit-frozen-distilbert-init.json
+- name: i21k_vit-frozen-clip_text-frozen
+  sku: G16
+  command:
+  - python train.py --config configs/model_search/i21k_vit-frozen-clip_text-frozen.json
+- name: i21k_vit-frozen-clip_text-init
+  sku: G16
+  command:
+  - python train.py --config configs/model_search/i21k_vit-frozen-clip_text-init.json
+- name: i21k_vit-init-distilbert-frozen
+  sku: G16
+  command:
+  - python train.py --config configs/model_search/i21k_vit-init-distilbert-frozen.json
+- name: i21k_vit-init-distilbert-init
+  sku: G16
+  command:
+  - python train.py --config configs/model_search/i21k_vit-init-distilbert-init.json
+- name: i21k_vit-init-clip_text-frozen
+  sku: G16
+  command:
+  - python train.py --config configs/model_search/i21k_vit-init-clip_text-frozen.json
+- name: i21k_vit-init-clip_text-init
+  sku: G16
+  command:
+  - python train.py --config configs/model_search/i21k_vit-init-clip_text-init.json
+- name: clip_vit-frozen-distilbert-frozen
+  sku: G16
+  command:
+  - python train.py --config configs/model_search/clip_vit-frozen-distilbert-frozen.json
+- name: clip_vit-frozen-distilbert-init
+  sku: G16
+  command:
+  - python train.py --config configs/model_search/clip_vit-frozen-distilbert-init.json
+- name: clip_vit-frozen-clip_text-frozen
+  sku: G16
+  command:
+  - python train.py --config configs/model_search/clip_vit-frozen-clip_text-frozen.json
+- name: clip_vit-frozen-clip_text-init
+  sku: G16
+  command:
+  - python train.py --config configs/model_search/clip_vit-frozen-clip_text-init.json
+- name: clip_vit-init-distilbert-frozen
+  sku: G16
+  command:
+  - python train.py --config configs/model_search/clip_vit-init-distilbert-frozen.json
+- name: clip_vit-init-distilbert-init
+  sku: G16
+  command:
+  - python train.py --config configs/model_search/clip_vit-init-distilbert-init.json
+- name: clip_vit-init-clip_text-frozen
+  sku: G16
+  command:
+  - python train.py --config configs/model_search/clip_vit-init-clip_text-frozen.json
+- name: clip_vit-init-clip_text-init
+  sku: G16
+  command:
+  - python train.py --config configs/model_search/clip_vit-init-clip_text-init.json

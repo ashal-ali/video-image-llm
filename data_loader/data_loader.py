@@ -80,7 +80,10 @@ class TextVideoDataLoader(BaseDataLoaderExplicitSplit):
         tsfm_dict = init_transform_dict(**tsfm_params)
 
         if tsfm_split is None:
-            tsfm_split = split
+            if 'train' in split: # for subset training splits (e.g. 1k)
+                tsfm_split = 'train'
+            else:
+                tsfm_split = split
         tsfm = tsfm_dict[tsfm_split]
         dataset = dataset_loader(dataset_name, text_params, video_params, data_dir, metadata_dir, split, tsfm, cut,
                                  subsample, sliding_window_stride, reader)

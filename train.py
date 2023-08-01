@@ -3,6 +3,7 @@ import collections
 import os
 
 import transformers
+from transformers import CLIPTokenizer
 from sacred import Experiment
 
 import data_loader.data_loader as module_data
@@ -13,9 +14,14 @@ import utils.visualizer as module_vis
 from parse_config import ConfigParser
 from trainer import Trainer
 from utils.util import replace_nested_dict_item
+from neptune.integrations.sacred import NeptuneObserver
+import neptune
+import wandb
+import os
 
 ex = Experiment('train')
 
+import pdb
 
 @ex.main
 def run():
@@ -33,7 +39,10 @@ def run():
         visualizer = None
 
     # build tokenizer
-    tokenizer = transformers.AutoTokenizer.from_pretrained(config['arch']['args']['text_params']['model'],
+    if "clip" in config['arch']['args']['text_params']['model']:
+        tokenizer = CLIPTokenizer.from_pretrained(config['arch']['args']['text_params']['model'])
+    else:
+        tokenizer = transformers.AutoTokenizer.from_pretrained(config['arch']['args']['text_params']['model'],
                                                            TOKENIZERS_PARALLELISM=False)
 
     # setup data_loader instances
@@ -58,6 +67,8 @@ def run():
             print('lr scheduler not found')
     if config['trainer']['neptune']:
         writer = ex
+    elif config['trainer']['wandb']:
+        writer = wandb.log
     else:
         writer = None
     trainer = Trainer(model, loss, metrics, optimizer,
@@ -107,6 +118,8 @@ if __name__ == '__main__':
                       help='indices of GPUs to enable (default: all)')
     args.add_argument('-o', '--observe', action='store_true',
                       help='Whether to observe (neptune)')
+    args.add_argument('-w', '--wandbapi', default=None, type=str,
+                        help='wandb api key (default: None)') 
     # custom cli options to modify configuration from default values given in json file.
     CustomArgs = collections.namedtuple('CustomArgs', 'flags type target')
     options = [
@@ -116,12 +129,17 @@ if __name__ == '__main__':
     config = ConfigParser(args, options)
     ex.add_config(config._config)
 
+    wandb.login(key="03ba3395fe1ce3201a18226899de14ea958c25cc", force=True)
+    wandb.init(project="video-image-llm", config=config._config)
+
     if config['trainer']['neptune']:
         # delete this error if you have added your own neptune credentials neptune.ai
-        raise ValueError('Neptune credentials not set up yet.')
-        ex.observers.append(NeptuneObserver(
-            api_token='INSERT TOKEN',
-            project_name='INSERT PROJECT NAME'))
+        #raise ValueError('Neptune credentials not set up yet.')
+        run = neptune.init_run(
+            project="zanedurante/video-image-llm",
+            api_token="eyJhcGlfYWRkcmVzcyI6Imh0dHBzOi8vYXBwLm5lcHR1bmUuYWkiLCJhcGlfdXJsIjoiaHR0cHM6Ly9hcHAubmVwdHVuZS5haSIsImFwaV9rZXkiOiJjMDEzZWM5ZS03NzhjLTQ1NmQtOWM5Mi1hZjRjYjBiZjg5ZTcifQ==",
+        )
+        ex.observers.append(NeptuneObserver(run=run))
         ex.run()
     else:
         run()

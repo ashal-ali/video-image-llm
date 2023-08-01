@@ -2,7 +2,7 @@ import timm
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import AutoModel
+from transformers import AutoModel, CLIPModel, CLIPTokenizer, CLIPProcessor
 
 from base import BaseModel
 from model.video_transformer import SpaceTimeTransformer
@@ -24,9 +24,18 @@ class FrozenInTime(BaseModel):
         self.load_temporal_fix = load_temporal_fix
         if not text_params['pretrained']:
             raise NotImplementedError("Huggingface text models require pretrained init.")
-
-        self.text_model = AutoModel.from_pretrained(text_params['model'])
+        if "clip" in text_params['model']:
+            # TODO: Add other clip text encoders
+            self.text_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch16").text_model
+            self.processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch16")
+            #clip_config = CLIPTextConfig.from_pretrained("openai/clip-vit-base-patch16")
+            #self.text_model = CLIPTextModel(clip_config).text_model
+        else:    
+            self.text_model = AutoModel.from_pretrained(text_params['model'])
         self.text_model.train()
+        if text_params['text_frozen']:
+            for p in self.text_model.parameters():
+                p.requires_grad = False
 
         pretrained = video_params['pretrained']
         if video_params['model'] == "SpaceTimeTransformer":
@@ -35,11 +44,22 @@ class FrozenInTime(BaseModel):
             attention_style = video_params.get('attention_style', 'frozen-in-time')
             arch_config = video_params.get('arch_config', 'base_patch16_224')
             vit_init = video_params.get('vit_init', 'imagenet-21k')
+            vit_frozen = video_params.get('vit_frozen', False)
             if arch_config == 'base_patch16_224':
                 vit_model = timm.models.vision_transformer.vit_base_patch16_224(pretrained=pretrained)
-                model = SpaceTimeTransformer(num_frames=num_frames,
-                                            time_init=time_init,
-                                            attention_style=attention_style)
+                model = SpaceTimeTransformer(
+                            num_frames=num_frames,
+                            time_init=time_init,
+                            attention_style=attention_style
+                        )
+            elif arch_config == 'base_patch16_clip_224':
+                vit_model = timm.create_model('vit_base_patch16_clip_224.openai', pretrained=pretrained)
+                model = SpaceTimeTransformer(
+                            num_frames=num_frames,
+                            time_init=time_init,
+                            attention_style=attention_style,
+                            clip=True
+                        )
             else:
                 raise NotImplementedError
 
@@ -49,6 +69,13 @@ class FrozenInTime(BaseModel):
             if load_checkpoint in ["", None]:
                 vit_checkpoint = vit_model.state_dict()
                 model.load_state_dict(vit_checkpoint, strict=False)
+            if vit_frozen:
+                vit_params = vit_checkpoint.keys()
+                for p in model.parameters():
+                    if p in vit_params:
+                        p.requires_grad = False
+                
+
             self.video_model = model
         else:
             raise NotImplementedError(f"{video_params['model']} not implemented")
@@ -58,8 +85,12 @@ class FrozenInTime(BaseModel):
 
         # Project to a common embedding
         if projection == 'minimal':
+            if "clip" in text_params['model']:
+                txt_ftr_dim = 512
+            else:
+                txt_ftr_dim = self.text_model.config.hidden_size
             txt_proj = nn.Sequential(nn.ReLU(),
-                                     nn.Linear(self.text_model.config.hidden_size, projection_dim),
+                                     nn.Linear(txt_ftr_dim, projection_dim),
                                      )
 
             vid_proj = nn.Sequential(
@@ -84,7 +115,7 @@ class FrozenInTime(BaseModel):
         self.device = device
 
     def forward(self, data, return_embeds=True):
-
+        
         text_data = data['text']
         video_data = data['video']
 
@@ -97,12 +128,16 @@ class FrozenInTime(BaseModel):
         return sim_matrix(text_embeddings, video_embeddings)
 
     def compute_text(self, text_data):
-        if self.text_params['model'].startswith('bert'):
+        if "clip" in self.text_params['model']:
+            text_embeddings = self.text_model(text_data['input_ids'], attention_mask=text_data['attention_mask'])[
+                'pooler_output']
+        elif self.text_params['model'].startswith('bert'):
             text_embeddings = self.text_model(text_data['input_ids'], attention_mask=text_data['attention_mask'])[
                 'pooler_output']
         elif self.text_params['model'].startswith('distilbert'):
             text_embeddings = self.text_model(**text_data).last_hidden_state[:, 0, :]
         else:
+            import pdb; pdb.set_trace()
             raise NotImplementedError
         text_embeddings = self.txt_proj(text_embeddings)
         return text_embeddings

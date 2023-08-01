@@ -116,6 +116,7 @@ def t2v_metrics(sims, query_masks=None):
 
 
 def v2t_metrics(sims, query_masks=None):
+    #import pdb; pdb.set_trace()
     """Compute retrieval metrics from a similarity matrix.
 
     Args:

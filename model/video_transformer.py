@@ -196,7 +196,7 @@ class SpaceTimeTransformer(nn.Module):
     def __init__(self, img_size=224, patch_size=16, in_chans=3, num_classes=1000, embed_dim=768, depth=12,
                  num_heads=12, mlp_ratio=4., qkv_bias=True, qk_scale=None, representation_size=None,
                  drop_rate=0., attn_drop_rate=0., drop_path_rate=0., hybrid_backbone=None, norm_layer=None,
-                 num_frames=8, time_init='rand', attention_style='frozen-in-time'):
+                 num_frames=8, time_init='rand', attention_style='frozen-in-time', clip=False):
         """
         Args:
             img_size (int, tuple): input image size
@@ -219,6 +219,7 @@ class SpaceTimeTransformer(nn.Module):
             time_init: (str) how to initialise the time attention layer, 'zeros' allows for the timesformer to start off
                         as ViT.
             attention_style: (str) how to attend to space and time.
+            clip: (bool) use openai's CLIP instead of ImageNet21k init.
         """
         super().__init__()
         self.num_classes = num_classes
@@ -226,7 +227,10 @@ class SpaceTimeTransformer(nn.Module):
         self.num_frames = num_frames
         self.embed_dim = embed_dim
         norm_layer = norm_layer or partial(nn.LayerNorm, eps=1e-6)
+        if clip:
+            norm_layer = partial(nn.LayerNorm, eps=1e-5, elementwise_affine=True)
         print("######USING ATTENTION STYLE: ", attention_style)
+
         if hybrid_backbone is not None:
             raise NotImplementedError('hybrid backbone not implemented')
         else:
@@ -242,6 +246,11 @@ class SpaceTimeTransformer(nn.Module):
         self.temporal_embed = nn.Parameter(torch.zeros(1, num_frames, embed_dim))
 
         self.pos_drop = nn.Dropout(p=drop_rate)
+
+        if clip:
+            self.norm_pre = norm_layer(embed_dim)
+        else:
+            self.norm_pre = nn.Identity()
 
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
         self.blocks = nn.ModuleList([
@@ -260,6 +269,7 @@ class SpaceTimeTransformer(nn.Module):
                 ('act', nn.Tanh())
             ]))
         else:
+            print("IDENTITY")
             self.pre_logits = nn.Identity()
 
         # Classifier head
@@ -319,6 +329,7 @@ class SpaceTimeTransformer(nn.Module):
         curr_patches = x.shape[1]
         x = x + total_pos_embed[:, :curr_patches]
         x = self.pos_drop(x)
+        x = self.norm_pre(x)
         n = self.patches_per_frame
         f = curr_frames
 
