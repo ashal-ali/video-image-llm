@@ -18,7 +18,7 @@
                 "text_frozen": true,
                 "input": "text"
             },
-            "projection": "minimal",
+            "projection": "",
             "load_checkpoint" : ""
         }
     },

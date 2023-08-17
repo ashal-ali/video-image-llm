@@ -6,7 +6,7 @@
         "args": {
             "video_params": {
                 "model": "SpaceTimeTransformer",
-                "arch_config": "base_patch16_224",
+                "arch_config": "base_patch16_clip_224",
                 "num_frames": 4,
                 "pretrained": true,
                 "time_init": "zeros"

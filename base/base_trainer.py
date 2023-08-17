@@ -2,22 +2,43 @@ from abc import abstractmethod
 
 import torch
 from numpy import inf
+import torch.distributed as dist
 
 
 class BaseTrainer:
     """
     Base class for all trainers
     """
-    def __init__(self, model, loss, metrics, optimizer, config, writer=None, init_val=False):
+    def __init__(self, model, loss, metrics, optimizer, config, writer=None, init_val=False, debug=False):
         self.config = config
         self.logger = config.get_logger('trainer', config['trainer']['verbosity'])
+
+        self.ddp = False
+        try:
+            if config['strat'] == 'ddp':
+                self.ddp = True
+        except:
+            self.logger.info("No strat set in config file, assuming not DDP")
+            self.ddp = False # Not set in config file, for backwards compatability
+        if self.ddp:
+            self.global_rank = dist.get_rank()
+            self.local_rank = self.global_rank % config['n_gpu']
+
         self.init_val = init_val
         # setup GPU device if available, move model into configured device
-        self.device, device_ids = self._prepare_device(config['n_gpu'])
+        self.device, device_ids = self._prepare_device(config['n_gpu'], debug)
+        print(self.device)
         self.model = model.to(self.device)
         self.model.device = self.device
-        if len(device_ids) > 1:
+        
+        
+        if len(device_ids) > 1 and not self.ddp:
             self.model = torch.nn.DataParallel(model, device_ids=device_ids)
+            self.logger.info("Using DataParallel!")
+        elif self.ddp:
+            self.model = torch.nn.parallel.DistributedDataParallel(model, 
+                device_ids=[self.local_rank], output_device=[self.local_rank])
+            self.logger.info("Using DistributedDataParallel!")
 
         loss = loss.to(self.device)
         self.loss = loss
@@ -134,12 +155,21 @@ class BaseTrainer:
             if not self.debugging and (epoch % self.save_period == 0 or best):
                 #import pdb; pdb.set_trace()
             #if best:
-                self._save_checkpoint(epoch, save_best=best)
+                if self.ddp:
+                    if self.global_rank == 0:
+                        self._save_checkpoint(epoch, save_best=best)
+                else:
+                    self._save_checkpoint(epoch, save_best=best)
 
-    def _prepare_device(self, n_gpu_use):
+    def _prepare_device(self, n_gpu_use, debug=False):
         """
         setup GPU device if available, move model into configured device
         """
+        if debug:
+            device = torch.device('cuda:{}'.format(0))
+            list_ids = [0]
+            self.logger.warning("Warning: Debugging mode, using only GPU 0 for all processes")
+            return device, list_ids
         n_gpu = torch.cuda.device_count()
         if n_gpu_use > 0 and n_gpu == 0:
             self.logger.warning("Warning: There\'s no GPU available on this machine,"
@@ -151,6 +181,9 @@ class BaseTrainer:
             n_gpu_use = n_gpu
         device = torch.device('cuda:0' if n_gpu_use > 0 else 'cpu')
         list_ids = list(range(n_gpu_use))
+        if self.ddp:
+            device = torch.device('cuda:{}'.format(self.local_rank))
+            list_ids = [self.local_rank]
         return device, list_ids
 
     def _save_checkpoint(self, epoch, save_best=False):
@@ -165,7 +198,7 @@ class BaseTrainer:
         state = {
             'arch': arch,
             'epoch': epoch,
-            'state_dict': self.model.state_dict(),
+            'state_dict': self.model.state_dict() if not self.ddp else self.model.module.state_dict(),
             'optimizer': self.optimizer.state_dict(),
             'monitor_best': self.mnt_best,
             'config': self.config

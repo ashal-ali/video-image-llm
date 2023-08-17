@@ -6,7 +6,7 @@ from data_loader.WebVid_dataset import WebVid
 from data_loader.VideoDirectory_dataset import VideoDirectory, CMDShotFeats
 from data_loader.ImageDirectory_dataset import ImageDirectory
 from data_loader.transforms import init_transform_dict
-
+from torch.utils.data.distributed import DistributedSampler
 
 def dataset_loader(dataset_name,
                    text_params,
@@ -74,7 +74,8 @@ class TextVideoDataLoader(BaseDataLoaderExplicitSplit):
                  num_workers=1,
                  prefetch_factor=2,
                  shuffle=True,
-                 val_batch_size=None):
+                 val_batch_size=None,
+                 strat=None):
         if tsfm_params is None:
             tsfm_params = {}
         tsfm_dict = init_transform_dict(**tsfm_params)
@@ -85,6 +86,7 @@ class TextVideoDataLoader(BaseDataLoaderExplicitSplit):
             else:
                 tsfm_split = split
         tsfm = tsfm_dict[tsfm_split]
+         
         dataset = dataset_loader(dataset_name, text_params, video_params, data_dir, metadata_dir, split, tsfm, cut,
                                  subsample, sliding_window_stride, reader)
         #        if split != 'train':
@@ -92,7 +94,9 @@ class TextVideoDataLoader(BaseDataLoaderExplicitSplit):
         if val_batch_size is not None and split == 'val':
             batch_size = val_batch_size
 
-        super().__init__(dataset, batch_size, shuffle, num_workers, prefetch_factor=prefetch_factor)
+        sampler = DistributedSampler(dataset) if strat == "ddp" else None
+
+        super().__init__(dataset, batch_size, shuffle, num_workers, sampler=sampler, prefetch_factor=prefetch_factor)
         self.dataset_name = dataset_name
 
 

@@ -96,3 +96,35 @@ if __name__ == "__main__":
     random_sims = (torch.rand([10, 8]) * 2) - 1
     loss = NormSoftmaxLoss()
     loss(random_sims)
+
+
+"""
+Adding code from Huggingface CLIP implementation, convert to this format in the future:
+
+        Calling the loss:        
+        # normalized features
+        image_embeds = image_embeds / image_embeds.norm(dim=-1, keepdim=True)
+        text_embeds = text_embeds / text_embeds.norm(dim=-1, keepdim=True)
+
+        # cosine similarity as logits
+        logit_scale = self.logit_scale.exp()
+        logits_per_text = torch.matmul(text_embeds, image_embeds.t()) * logit_scale
+        logits_per_image = logits_per_text.T
+
+        loss = None
+        if return_loss:
+            loss = clip_loss(logits_per_text)
+        
+        loss function: 
+        # contrastive loss function, adapted from
+# https://sachinruk.github.io/blog/pytorch/pytorch%20lightning/loss%20function/gpu/2021/03/07/CLIP.html
+def contrastive_loss(logits: torch.Tensor, dim: int) -> torch.Tensor:
+    neg_ce = torch.diag(F.log_softmax(logits, dim=dim))
+    return -neg_ce.mean()
+
+
+def clip_loss(similarity: torch.Tensor) -> torch.Tensor:
+    caption_loss = contrastive_loss(similarity, dim=0)
+    image_loss = contrastive_loss(similarity, dim=1)
+    return (caption_loss + image_loss) / 2.0
+"""

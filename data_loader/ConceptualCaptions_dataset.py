@@ -15,6 +15,8 @@ class ConceptualCaptions3M(TextImageDataset):
         split_files = {
             'train': 'train.csv',
             'train_1k': 'train_1k.csv',
+            'train_rewrites': 'train_rewrites.csv',
+            'train_rewrites_equiv': 'train_rewrites_equiv.csv',
             'val': 'val.csv',
             # there is no test
             'test': 'val.csv'

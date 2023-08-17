@@ -68,7 +68,8 @@
         "monitor": "min val_loss_0",
         "early_stop": 10,
         "init_val": true,
-        "neptune": false
+        "neptune": false,
+        "wandb": false
     },
     "visualizer": {
         "type": ""

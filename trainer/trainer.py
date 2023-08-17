@@ -6,7 +6,12 @@ from tqdm import tqdm
 from base import BaseTrainer
 from model.model import sim_matrix
 from utils import inf_loop
+import random
 
+import torch
+from torch import Tensor
+torch.autograd.set_detect_anomaly(True) # TODO: Remove for optimal performance
+import os
 
 class Trainer(BaseTrainer):
     """
@@ -18,8 +23,8 @@ class Trainer(BaseTrainer):
 
     def __init__(self, model, loss, metrics, optimizer, config, data_loader,
                  valid_data_loader=None, lr_scheduler=None, len_epoch=None, writer=None,
-                 visualizer=None, tokenizer=None, max_samples_per_epoch=50000):
-        super().__init__(model, loss, metrics, optimizer, config, writer)
+                 visualizer=None, tokenizer=None, max_samples_per_epoch=50000, debug=False):
+        super().__init__(model, loss, metrics, optimizer, config, writer, debug=debug)
         self.config = config
         self.wandb = config['trainer']['wandb']
         self.data_loader = data_loader
@@ -41,6 +46,8 @@ class Trainer(BaseTrainer):
         self.total_batch_sum = sum(x.batch_size for x in self.data_loader)
         self.tokenizer = tokenizer
         self.max_samples_per_epoch = max_samples_per_epoch
+        if self.ddp:
+            self.accumulation_steps = 2 # TODO: Set in config
 
     def _eval_metrics(self, output):
         log_dict = {}
@@ -79,10 +86,11 @@ class Trainer(BaseTrainer):
         
         # Shuffle order of data at the beginning of the epoch
         # Thus, when we train for each epoch new data is seen every time
-
         for dl in self.data_loader:
             dl.dataset.shuffle_order()
-
+            if self.ddp:
+                dl.sampler.set_epoch(epoch)
+        #import pdb; pdb.set_trace()
         self.model.train()
         total_loss = [0] * len(self.data_loader)
         total_iterations = self.max_samples_per_epoch // self.total_batch_sum + 1
@@ -99,8 +107,46 @@ class Trainer(BaseTrainer):
                     data['video'] = data['video'].to(self.device)
 
                     self.optimizer.zero_grad()
+                    # for debugging
+                    #import pdb; pdb.set_trace()
+                    #random_int = random.randint(0, 10000)
+                    #rank = torch.distributed.get_rank()
+                    #torch.save(rank, f"/mnt/datasets_mnt/debug/fail_rank_{random_int}.pt")
+                    #torch.save(data['text'], f"/mnt/datasets_mnt/debug/fail_text_{random_int}.pt")
+                    
+                    # For debugging send to cpu
+                    #data['text'] = {key: val.cpu() for key, val in data['text'].items()}
+                    #data['video'] = data['video'].cpu()
+                    #self.model.cpu()(data)
+                    #s = str(data['text'])
+                    #with open("/mnt/datasets_mnt/debug/0fail_text_all.txt", "a") as f:
+                    #    f.write(s + "\n")
                     text_embeds, video_embeds = self.model(data)
+                    #if self.ddp and loss_type == 'global':
+                    #if False:
+                        # Synchronize outputs
+                        # import pdb; pdb.set_trace()
+                        #all_text_embeds = [torch.zeros_like(text_embeds) for _ in range(torch.distributed.get_world_size())]
+                        #all_video_embeds = [torch.zeros_like(video_embeds) for _ in range(torch.distributed.get_world_size())]
+                        
+                        #torch.distributed.all_gather(all_text_embeds, text_embeds)
+                        #torch.distributed.all_gather(all_video_embeds, video_embeds)
+                    #    combined_text, combined_videos = AllGatherGrad.apply(text_embeds), AllGatherGrad.apply(video_embeds)
+                    #    if self.local_rank == 0:
+                            # Flatten combiend_text and combined_videos
+                            # (world_size, batch_size, embed_dim) -> (world_size * batch_size, embed_dim)
+                    #        combined_text = combined_text.view(-1, combined_text.shape[-1])
+                    #        combined_videos = combined_videos.view(-1, combined_videos.shape[-1])
+                    #        all_output = sim_matrix(combined_text, combined_videos)
+                    #        loss = self.loss(all_output)
+                    #        loss.backward()
+                            #torch.save(1, f"/mnt/datasets_mnt/debug/loss_success_{random_int}.pt")
+                    #        for param in self.model.parameters():
+                    #            if param.requires_grad:
+                    #                torch.distributed.all_reduce(param.grad.data, op=torch.distributed.ReduceOp.SUM)
+                    
                     output = sim_matrix(text_embeds, video_embeds)
+                    #os.system('nvidia-smi') # ensure using all gpus
                     loss = self.loss(output)
                     loss.backward()
                     self.optimizer.step()
@@ -133,7 +179,7 @@ class Trainer(BaseTrainer):
         if self.lr_scheduler is not None:
             self.lr_scheduler.step()
 
-        return log, batch_idx
+        return log
 
     def _valid_epoch(self, epoch):
         """
@@ -256,3 +302,28 @@ def format_nested_metrics_for_writer(metrics, mode, name="TEST"):
         log_name = f"[{mode}]{name}_{key}"
         res[log_name] = val
     return res
+
+# Modified from https://github.com/Lightning-AI/lightning/blob/ab59f308b18622421edc67048d3b9fbfde96a9f4/src/pytorch_lightning/utilities/distributed.py#L143
+class AllGatherGrad(torch.autograd.Function):
+    @staticmethod
+    def forward(
+        ctx,
+        tensor,
+        group = torch.distributed.group.WORLD,
+    ) -> Tensor:
+        ctx.group = group
+
+        gathered_tensor = [torch.zeros_like(tensor) for _ in range(torch.distributed.get_world_size())]
+
+        torch.distributed.all_gather(gathered_tensor, tensor, group=group)
+        gathered_tensor = torch.stack(gathered_tensor, dim=0)
+
+        return gathered_tensor
+    
+    @staticmethod
+    def backward(ctx, *grad_output) -> (Tensor, None):
+        grad_output = torch.cat(grad_output)
+
+        torch.distributed.all_reduce(grad_output, op=torch.distributed.ReduceOp.SUM, async_op=False, group=ctx.group)
+
+        return grad_output[torch.distributed.get_rank()], None

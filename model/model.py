@@ -6,6 +6,7 @@ from transformers import AutoModel, CLIPModel, CLIPTokenizer, CLIPProcessor
 
 from base import BaseModel
 from model.video_transformer import SpaceTimeTransformer
+from model.clip_layers import CLIP_INIT_LAYERS
 from utils.util import state_dict_data_parallel_fix
 
 
@@ -26,7 +27,8 @@ class FrozenInTime(BaseModel):
             raise NotImplementedError("Huggingface text models require pretrained init.")
         if "clip" in text_params['model']:
             # TODO: Add other clip text encoders
-            self.text_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch16").text_model
+            clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch16")
+            self.text_model = clip_model.text_model
             self.processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch16")
             #clip_config = CLIPTextConfig.from_pretrained("openai/clip-vit-base-patch16")
             #self.text_model = CLIPTextModel(clip_config).text_model
@@ -61,21 +63,35 @@ class FrozenInTime(BaseModel):
                             clip=True
                         )
             else:
-                raise NotImplementedError
-
+                raise NotImplementedError 
             model.head = nn.Identity()
             model.pre_logits = nn.Identity()
             ftr_dim = model.embed_dim
             if load_checkpoint in ["", None]:
                 vit_checkpoint = vit_model.state_dict()
-                model.load_state_dict(vit_checkpoint, strict=False)
-            if vit_frozen:
-                vit_params = vit_checkpoint.keys()
-                for p in model.parameters():
-                    if p in vit_params:
-                        p.requires_grad = False
-                
+                ckpt_vals = model.load_state_dict(vit_checkpoint, strict=False)
+                if "clip" in arch_config:
+                    # Manually load CLIP weights with different names
+                    nn.init.zeros_(model.patch_embed.proj.bias) # TODO: Change bias to be False and add flag during init
+                    for block in model.blocks:
+                        nn.init.zeros_(block.norm3.weight)
+                        nn.init.zeros_(block.norm3.bias)
+                    # model.patch_embed.proj.weight = vit_checkpoint['patch_embed.proj.weight']
 
+            if vit_frozen and "clip" in arch_config:
+                for name, layer in model.named_children():
+                    if name == "blocks":
+                        for block in layer:
+                            for b_name, b_layer in block.named_children():
+                                if b_name in CLIP_INIT_LAYERS:
+                                    for p in b_layer.parameters():
+                                        p.requires_grad = False
+                    elif name in CLIP_INIT_LAYERS:
+                        for p in layer.parameters():
+                            p.requires_grad = False
+            elif vit_frozen:
+                for p in vit_model.parameters():
+                    p.requires_grad = False
             self.video_model = model
         else:
             raise NotImplementedError(f"{video_params['model']} not implemented")
@@ -83,12 +99,15 @@ class FrozenInTime(BaseModel):
         # for backwards compatibility (old models)
         self.video_model.fc = nn.Identity()
 
-        # Project to a common embedding
-        if projection == 'minimal':
-            if "clip" in text_params['model']:
-                txt_ftr_dim = 512
-            else:
-                txt_ftr_dim = self.text_model.config.hidden_size
+        # Project to a common embedding  
+        if "clip" in text_params['model'] and "clip" in arch_config:
+            txt_proj = clip_model.text_projection
+            #vid_proj = nn.Identity()
+            vid_proj = clip_model.visual_projection
+
+            # vid_proj set to identity       
+        elif projection == 'minimal':
+            txt_ftr_dim = self.text_model.config.hidden_size
             txt_proj = nn.Sequential(nn.ReLU(),
                                      nn.Linear(txt_ftr_dim, projection_dim),
                                      )
@@ -97,7 +116,16 @@ class FrozenInTime(BaseModel):
                 nn.Linear(ftr_dim, projection_dim)
             )
         elif projection == '':
-            txt_proj = nn.Identity()
+            print("Using identity projection")
+            #txt_proj = nn.Identity()
+            #if "clip" in text_params['model']:
+            #txt_ftr_dim = 512
+            #print("OUTPUT change for text:", txt_ftr_dim, projection_dim)
+            #print("OUTPUT of video model:", ftr_dim, projection_dim)
+            #txt_proj = nn.Identity() 
+            #nn.Sequential(nn.ReLU(),
+            #                nn.Linear(txt_ftr_dim, ftr_dim),
+            #                )
             vid_proj = nn.Identity()
         else:
             raise NotImplementedError
@@ -141,6 +169,15 @@ class FrozenInTime(BaseModel):
             raise NotImplementedError
         text_embeddings = self.txt_proj(text_embeddings)
         return text_embeddings
+
+    # Function wrapper compatibility with OpenAI's CLIP
+    def encode_text(self, text_data): 
+        return self.compute_text(text_data)
+    
+    # Function wrapper compatibility with OpenAI's CLIP
+    def encode_image(self, image_data): 
+        video_data = image_data.unsqueeze(1)
+        return self.compute_video(video_data)
 
     def compute_video(self, video_data):
         video_embeddings = self.video_model(video_data)

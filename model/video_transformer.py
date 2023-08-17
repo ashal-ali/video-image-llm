@@ -32,6 +32,9 @@ def attn(q, k, v):
     out = einsum('b i j, b j d -> b i d', attn, v)
     return out
 
+class QuickGELU(nn.Module):
+    def forward(self, x: torch.Tensor):
+        return x * torch.sigmoid(1.702 * x)
 
 class Mlp(nn.Module):
     def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
@@ -99,7 +102,7 @@ class VarAttention(nn.Module):
 
     def forward(self, x, einops_from, einops_to, **einops_dims):
         h = self.num_heads
-        # project x to q, k, v vaalues
+        # project x to q, k, v values
         q, k, v = self.qkv(x).chunk(3, dim=-1)
         q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> (b h) n d', h=h), (q, k, v))
 
@@ -249,15 +252,19 @@ class SpaceTimeTransformer(nn.Module):
 
         if clip:
             self.norm_pre = norm_layer(embed_dim)
+            act_layer = QuickGELU
         else:
             self.norm_pre = nn.Identity()
+            act_layer = nn.GELU
 
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
+        
+
         self.blocks = nn.ModuleList([
             SpaceTimeBlock(
                 dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale,
                 drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer, time_init=time_init,
-                attention_style=attention_style)
+                attention_style=attention_style, act_layer=act_layer)
             for i in range(depth)])
         self.norm = norm_layer(embed_dim)
 
@@ -310,7 +317,7 @@ class SpaceTimeTransformer(nn.Module):
         self.head = nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
 
     def forward_features(self, x):
-        b, curr_frames, channels, _, _ = x.shape
+        b, curr_frames, channels, _, _ = x.shape # b 101
         x = self.patch_embed(x)
         x = x.flatten(2).transpose(2, 1)
         x = x.reshape(b, -1, self.patch_embed.embed_dim)
