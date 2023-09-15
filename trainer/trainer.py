@@ -13,6 +13,8 @@ from torch import Tensor
 torch.autograd.set_detect_anomaly(True) # TODO: Remove for optimal performance
 import os
 
+from eval import run_imagenetv2_eval, run_ucf101_eval
+
 class Trainer(BaseTrainer):
     """
     Trainer class
@@ -23,7 +25,7 @@ class Trainer(BaseTrainer):
 
     def __init__(self, model, loss, metrics, optimizer, config, data_loader,
                  valid_data_loader=None, lr_scheduler=None, len_epoch=None, writer=None,
-                 visualizer=None, tokenizer=None, max_samples_per_epoch=50000, debug=False):
+                 visualizer=None, tokenizer=None, max_samples_per_epoch=50000, debug=False, global_rank=0):
         super().__init__(model, loss, metrics, optimizer, config, writer, debug=debug)
         self.config = config
         self.wandb = config['trainer']['wandb']
@@ -36,7 +38,7 @@ class Trainer(BaseTrainer):
             # iteration-based training
             self.data_loader = inf_loop(data_loader)
             self.len_epoch = len_epoch
-
+        self.global_rank = global_rank
         self.valid_data_loader = valid_data_loader
         self.do_validation = self.valid_data_loader is not None
         self.lr_scheduler = lr_scheduler
@@ -45,9 +47,18 @@ class Trainer(BaseTrainer):
         self.batch_size = self.data_loader[0].batch_size
         self.total_batch_sum = sum(x.batch_size for x in self.data_loader)
         self.tokenizer = tokenizer
+        if 'global' in self.loss.__class__.__name__.lower():
+            self.global_loss = True
+        else:
+            self.global_loss = False
         self.max_samples_per_epoch = max_samples_per_epoch
+        self.temperature = torch.tensor(1.0)
+        if self.config["loss"]["args"]["temperature"]:
+            self.temperature = nn.Parameter(torch.tensor([np.log(1/0.07)]))
+        self.temperature = self.temperature.to(self.device) 
+        nn.Parameter(torch.tensor([np.log(1/0.07)]))
         if self.ddp:
-            self.accumulation_steps = 2 # TODO: Set in config
+            self.accumulation_steps = 1 # TODO: Set in config
 
     def _eval_metrics(self, output):
         log_dict = {}
@@ -56,10 +67,11 @@ class Trainer(BaseTrainer):
             acc_metrics[i] += metric(output)
             if self.writer is not None:
                 if self.wandb:
-                    log_dict['{}'.format(metric.__name__)] = acc_metrics[i]
+                    if self.global_rank == 0:
+                        log_dict['{}'.format(metric.__name__)] = acc_metrics[i]
                 else:
                     self.writer.log_scalar('{}'.format(metric.__name__), acc_metrics[i])
-        if self.wandb:
+        if self.wandb and self.global_rank == 0:
             self.writer(log_dict)
         return acc_metrics
 
@@ -105,7 +117,11 @@ class Trainer(BaseTrainer):
                                                       truncation=True)
                     data['text'] = {key: val.to(self.device) for key, val in data['text'].items()}
                     data['video'] = data['video'].to(self.device)
-
+                    count_dict = {}
+                    #for name, param in self.model.named_parameters():
+                    #    if 'weight' in name:
+                    #        if param.grad is not None:
+                    #            count_dict[name] = torch.zeros(param.grad.shape)
                     self.optimizer.zero_grad()
                     # for debugging
                     #import pdb; pdb.set_trace()
@@ -144,18 +160,43 @@ class Trainer(BaseTrainer):
                     #        for param in self.model.parameters():
                     #            if param.requires_grad:
                     #                torch.distributed.all_reduce(param.grad.data, op=torch.distributed.ReduceOp.SUM)
-                    
-                    output = sim_matrix(text_embeds, video_embeds)
-                    #os.system('nvidia-smi') # ensure using all gpus
-                    loss = self.loss(output)
+                    if self.global_loss:
+                        #import pdb; pdb.set_trace()
+                        all_text_embeds = [torch.zeros_like(text_embeds) for _ in range(torch.distributed.get_world_size())]
+                        all_video_embeds = [torch.zeros_like(video_embeds) for _ in range(torch.distributed.get_world_size())]
+
+                        torch.distributed.all_gather(all_text_embeds, text_embeds)
+                        torch.distributed.all_gather(all_video_embeds, video_embeds)
+
+                        loss = self.loss(text_embeds, video_embeds, all_text_embeds, all_video_embeds, self.temperature)
+                        #print("Text embeds:", text_embeds.shape)
+                        #print("Number of text embeds:", len(all_text_embeds))
+                    else:
+                        output = sim_matrix(text_embeds, video_embeds, self.temperature)
+                        #os.system('nvidia-smi') # ensure using all gpus
+                        #print("Output shape:", output.shape)
+                        loss = self.loss(output)
+                    import pdb; pdb.set_trace()
                     loss.backward()
+                    for name, param in self.model.named_parameters():
+                        if 'weight' or 'bias' in name:
+                            if param.grad is not None:
+                                count_dict[name] = 1
+                    import pdb; pdb.set_trace()
+                    print(count_dict)
+                    #os.system('nvidia-smi') # see memory usage
                     self.optimizer.step()
+
+                    # Cap temperature
+                    if self.config["loss"]["args"]["temperature"]:
+                        self.temperature.data = torch.clamp(self.temperature.data, 0.0001, 4.6052) # 0.0001 to log(100)
 
                     detached_loss = loss.detach().item()
 
                     if self.writer is not None:
                         if self.wandb:
-                            self.writer({f'loss_train_{dl_idx}': detached_loss})
+                            if self.global_rank == 0:
+                                self.writer({f'loss_train_{dl_idx}': detached_loss})
                         else:    
                             self.writer.log_scalar(f'loss_train_{dl_idx}', detached_loss)
 
@@ -164,7 +205,9 @@ class Trainer(BaseTrainer):
                     progress.set_postfix({"dl": dl_idx, "loss": detached_loss})
 
                     self.optimizer.zero_grad()
-
+                # Step after one batch from each dataloader
+                if self.lr_scheduler is not None:
+                    self.lr_scheduler.step()
                 if batch_idx == self.len_epoch:
                     break
 
@@ -175,9 +218,6 @@ class Trainer(BaseTrainer):
         if self.do_validation:
             val_log = self._valid_epoch(epoch)
             log.update(val_log)
-
-        if self.lr_scheduler is not None:
-            self.lr_scheduler.step()
 
         return log
 
@@ -225,19 +265,38 @@ class Trainer(BaseTrainer):
                     else:
                         text_embed, vid_embed = self.model(data, return_embeds=True)
 
-                    text_embed_arr[dl_idx].append(text_embed.cpu())
-                    vid_embed_arr[dl_idx].append(vid_embed.cpu())
-                    sims_batch = sim_matrix(text_embed, vid_embed)
-                    loss = self.loss(sims_batch)
-                    total_val_loss[dl_idx] += loss.item()
-        if self.wandb:
+                    if self.global_loss:
+                        all_text_embeds = [torch.zeros_like(text_embed) for _ in range(torch.distributed.get_world_size())]
+                        all_video_embeds = [torch.zeros_like(vid_embed) for _ in range(torch.distributed.get_world_size())]
+
+                        torch.distributed.all_gather(all_text_embeds, text_embed)
+                        torch.distributed.all_gather(all_video_embeds, vid_embed)
+
+                        loss = self.loss(text_embed, vid_embed, all_text_embeds, all_video_embeds, self.temperature)
+
+                        all_losses = [torch.zeros_like(loss) for _ in range(torch.distributed.get_world_size())]
+                        torch.distributed.all_gather(all_losses, loss)
+                        for l in all_losses:
+                            total_val_loss[dl_idx] += l.item()
+
+                        for t_e, v_e in zip(all_text_embeds, all_video_embeds):
+                            text_embed_arr[dl_idx].append(t_e.cpu())
+                            vid_embed_arr[dl_idx].append(v_e.cpu())
+                    else:        
+                        text_embed_arr[dl_idx].append(text_embed.cpu())
+                        vid_embed_arr[dl_idx].append(vid_embed.cpu())
+                        sims_batch = sim_matrix(text_embed, vid_embed)
+                        
+                        loss = self.loss(sims_batch)
+                        total_val_loss[dl_idx] += loss.item()
+        if self.wandb and self.global_rank == 0:
             log_dict = {}
         for dl_idx in range(len(self.valid_data_loader)):
             # TODO: this needs a clean
-
             if self.writer is not None:
                 if self.wandb:
-                    log_dict[f'loss_val_{dl_idx}'] = total_val_loss[dl_idx] / len(self.valid_data_loader[dl_idx])
+                    if self.global_rank == 0:
+                        log_dict[f'loss_val_{dl_idx}'] = total_val_loss[dl_idx] / len(self.valid_data_loader[dl_idx])
                 else:    
                     self.writer.log_scalar(f'loss_val_{dl_idx}',
                                        total_val_loss[dl_idx] / len(self.valid_data_loader[dl_idx]))
@@ -258,7 +317,8 @@ class Trainer(BaseTrainer):
                     to_write = format_nested_metrics_for_writer(res, mode=metric_name,
                                                                 name=self.valid_data_loader[dl_idx].dataset_name)
                     if self.wandb:
-                        log_dict.update(to_write)
+                        if self.global_rank == 0:
+                            log_dict.update(to_write)
                     else:
                         for key, val in to_write.items():
                             self.writer.log_scalar(key, val)
@@ -273,8 +333,13 @@ class Trainer(BaseTrainer):
         res_dict = {f'val_loss_{dl_idx}': total_val_loss[dl_idx] / len(self.valid_data_loader[dl_idx])
                     for dl_idx in range(len(self.valid_data_loader))}
         res_dict['nested_val_metrics'] = nested_metrics
-        if self.wandb:
+        if self.global_rank == 0:
+            in_acc1, in_acc5, in_acc20 = run_imagenetv2_eval(self.model)
+            ucf_acc1, ucf_acc5, ucf_acc20 = run_ucf101_eval(self.model)
+            log_dict.update({'imagenetv2_acc1': in_acc1, 'imagenetv2_acc5': in_acc5, 'imagenetv2_acc20': in_acc20})
+            log_dict.update({'ucf101_acc1': ucf_acc1, 'ucf101_acc5': ucf_acc5, 'ucf101_acc20': ucf_acc20})
             self.writer(log_dict)
+
         return res_dict
 
     def _progress(self, batch_idx, dl_idx):
@@ -292,7 +357,7 @@ def verbose(epoch, metrics, mode, name="TEST"):
     r1, r5, r10, r50 = metrics["R1"], metrics["R5"], metrics["R10"], metrics["R50"]
     msg = f"[{mode}]{name:s} epoch {epoch}, R@1: {r1:.1f}"
     msg += f", R@5: {r5:.1f}, R@10 {r10:.1f}, R@50 {r50:.1f}"
-    msg += f"MedR: {metrics['MedR']:g}, MeanR: {metrics['MeanR']:.1f}"
+    msg += f" MedR: {metrics['MedR']:g}, MeanR: {metrics['MeanR']:.1f}"
     print(msg)
 
 

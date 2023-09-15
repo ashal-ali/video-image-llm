@@ -124,8 +124,13 @@ class BaseTrainer:
                     log[key] = value
 
             # print logged informations to the screen
-            for key, value in log.items():
-                self.logger.info('    {:15s}: {}'.format(str(key), value))
+            if self.ddp:
+                if self.global_rank == 0:
+                    for key, value in log.items():
+                        self.logger.info('    {:15s}: {}'.format(str(key), value))
+            else:
+                for key, value in log.items():
+                    self.logger.info('    {:15s}: {}'.format(str(key), value))
 
             # evaluate model performance according to configured metric, save best checkpoint as model_best
             best = False

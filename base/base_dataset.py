@@ -24,7 +24,8 @@ class TextVideoDataset(Dataset):
                  cut=None,
                  subsample=1,
                  sliding_window_stride=-1,
-                 reader='decord'
+                 reader='decord',
+                 **kwargs
                  ):
         self.dataset_name = dataset_name
         self.text_params = text_params
@@ -42,7 +43,7 @@ class TextVideoDataset(Dataset):
         self.sliding_window_stride = sliding_window_stride
         self.video_reader = video_reader[reader]
         self.label_type = 'caption'
-        self._load_metadata()
+        self._load_metadata(**kwargs)
         self.shuffle_order()
         if self.sliding_window_stride != -1:
             if self.split != 'test':

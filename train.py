@@ -14,8 +14,7 @@ import utils.visualizer as module_vis
 from parse_config import ConfigParser
 from trainer import Trainer
 from utils.util import replace_nested_dict_item
-from neptune.integrations.sacred import NeptuneObserver
-import neptune
+
 import wandb
 import os
 import torch
@@ -24,7 +23,6 @@ import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
-ex = Experiment('train')
 
 def get_dist_args():
     envvars = [
@@ -128,6 +126,7 @@ def ddp_run(global_rank, local_rank, world_size, config):
     trainable_params = filter(lambda p: p.requires_grad, model.parameters())
     optimizer = config.initialize('optimizer', transformers, trainable_params)
     lr_scheduler = None
+    #import pdb; pdb.set_trace()
     if 'lr_scheduler' in config._config:
         if hasattr(transformers, config._config['lr_scheduler']['type']):
             lr_scheduler = config.initialize('lr_scheduler', transformers, optimizer)
@@ -135,6 +134,8 @@ def ddp_run(global_rank, local_rank, world_size, config):
             print('lr scheduler not found')
     if config['trainer']['neptune']:
         writer = ex
+
+
     elif config['trainer']['wandb']:
         writer = wandb.log
     else:
@@ -148,13 +149,14 @@ def ddp_run(global_rank, local_rank, world_size, config):
                       writer=writer,
                       tokenizer=tokenizer,
                       max_samples_per_epoch=config['trainer']['max_samples_per_epoch'],
-                      debug=DEBUG)
+                      debug=DEBUG,
+                      global_rank=global_rank)
     trainer.train()
     destroy_process_group()
     return
 
 
-@ex.main
+#@ex.main
 def run():
     logger = config.get_logger('train')
     os.environ['TOKENIZERS_PARALLELISM'] = "false"
@@ -272,13 +274,16 @@ if __name__ == '__main__':
 
     args_raw = args.parse_args()
     config = ConfigParser(args, options)
-    ex.add_config(config._config)
 
 
 
     if config['trainer']['neptune']:
         # delete this error if you have added your own neptune credentials neptune.ai
         #raise ValueError('Neptune credentials not set up yet.')
+        from neptune.integrations.sacred import NeptuneObserver
+        import neptune
+        ex = Experiment('train')
+        ex.add_config(config._config)
         run = neptune.init_run(
             project="zanedurante/video-image-llm",
             api_token="eyJhcGlfYWRkcmVzcyI6Imh0dHBzOi8vYXBwLm5lcHR1bmUuYWkiLCJhcGlfdXJsIjoiaHR0cHM6Ly9hcHAubmVwdHVuZS5haSIsImFwaV9rZXkiOiJjMDEzZWM5ZS03NzhjLTQ1NmQtOWM5Mi1hZjRjYjBiZjg5ZTcifQ==",
@@ -296,12 +301,42 @@ if __name__ == '__main__':
         world_size = dist_args.get("WORLD_SIZE")
         gpu_rank = args_raw.local_rank
         node_rank = dist_args.get("NODE_RANK")
+        master_addr = dist_args.get("MASTER_ADDR")
+        master_port = dist_args.get("MASTER_PORT")
+        print(f"WORLD_SIZE: {world_size}, GPU_RANK: {gpu_rank}, NODE RANK: {node_rank}\n")
+        # Add support for single gpu dist training with same launcher
         if node_rank is None:
-            node_rank = 0 # Add support for single gpu dist training with same launcher
+            node_rank = 0 
+        if world_size is None:
+            world_size = 1
+        if gpu_rank is None:
+            gpu_rank = 0
+        if master_addr is None:
+            os.environ['MASTER_ADDR'] = 'localhost'
+        if master_port is None:
+            os.environ['MASTER_PORT'] = '12323'
+
+        if node_rank > 0:
+            os.environ['MASTER_ADDR'] = os.environ['MASTER_IP']
+            master_addr = os.environ['MASTER_IP'] # Master IP set separately
+        
         global_rank = node_rank * gpus_per_node + gpu_rank
-        dist.init_process_group(
-            backend='nccl', rank=global_rank, world_size=world_size
-        )
+        master_uri = "tcp://%s:%s" % (master_addr, master_port)
+        os.environ["TORCH_CPP_LOG_LEVEL"]="INFO"
+        os.environ[
+            "TORCH_DISTRIBUTED_DEBUG"
+        ] = "DETAIL"
+        print(f"WORLD_SIZE: {world_size}, GPU_RANK: {gpu_rank}, NODE RANK: {node_rank} MASTER_ADDR: {master_addr} \n")
+        
+        if "None" in master_uri: # Use standard init if not set
+            dist.init_process_group(
+                backend='nccl', rank=global_rank, world_size=world_size
+            )
+        else:
+            dist.init_process_group(
+                backend='nccl', rank=global_rank, init_method=master_uri, world_size=world_size
+            )
+
         ddp_run(global_rank, gpu_rank, world_size, config)
         #mp.spawn(ddp_run, args=(world_size, config), nprocs=world_size) # Use DistributedDataParallel
     else:

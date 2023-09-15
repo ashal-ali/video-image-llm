@@ -1,6 +1,6 @@
 {
     "name": "LiT--CC3M-WV10M",
-    "n_gpu": 1,
+    "n_gpu": 4,
     "strat": "dp",
     "arch": {
         "type": "FrozenInTime",

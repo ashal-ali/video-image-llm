@@ -35,7 +35,8 @@ class FrozenInTime(BaseModel):
         else:    
             self.text_model = AutoModel.from_pretrained(text_params['model'])
         self.text_model.train()
-        if text_params['text_frozen']:
+        text_frozen = text_params['text_frozen']
+        if text_frozen:
             for p in self.text_model.parameters():
                 p.requires_grad = False
 
@@ -46,13 +47,17 @@ class FrozenInTime(BaseModel):
             attention_style = video_params.get('attention_style', 'frozen-in-time')
             arch_config = video_params.get('arch_config', 'base_patch16_224')
             vit_init = video_params.get('vit_init', 'imagenet-21k')
+            freeze_first_frame = video_params.get('freeze_first_frame', False)
             vit_frozen = video_params.get('vit_frozen', False)
+            patch_drop_rate = video_params.get('patch_drop_rate', 0.0)
             if arch_config == 'base_patch16_224':
                 vit_model = timm.models.vision_transformer.vit_base_patch16_224(pretrained=pretrained)
                 model = SpaceTimeTransformer(
                             num_frames=num_frames,
                             time_init=time_init,
-                            attention_style=attention_style
+                            attention_style=attention_style,
+                            patch_drop_rate=patch_drop_rate,
+                            freeze_first_frame=freeze_first_frame,
                         )
             elif arch_config == 'base_patch16_clip_224':
                 vit_model = timm.create_model('vit_base_patch16_clip_224.openai', pretrained=pretrained)
@@ -60,6 +65,8 @@ class FrozenInTime(BaseModel):
                             num_frames=num_frames,
                             time_init=time_init,
                             attention_style=attention_style,
+                            patch_drop_rate=patch_drop_rate,
+                            freeze_first_frame=freeze_first_frame,
                             clip=True
                         )
             else:
@@ -68,16 +75,19 @@ class FrozenInTime(BaseModel):
             model.pre_logits = nn.Identity()
             ftr_dim = model.embed_dim
             if load_checkpoint in ["", None]:
+                #import pdb; pdb.set_trace()
                 vit_checkpoint = vit_model.state_dict()
                 ckpt_vals = model.load_state_dict(vit_checkpoint, strict=False)
                 if "clip" in arch_config:
                     # Manually load CLIP weights with different names
                     nn.init.zeros_(model.patch_embed.proj.bias) # TODO: Change bias to be False and add flag during init
                     for block in model.blocks:
-                        nn.init.zeros_(block.norm3.weight)
+                        nn.init.ones_(block.norm3.weight)
                         nn.init.zeros_(block.norm3.bias)
                     # model.patch_embed.proj.weight = vit_checkpoint['patch_embed.proj.weight']
-
+            if vit_frozen:
+                model.pos_embed.requires_grad = False
+                model.cls_token.requires_grad = False
             if vit_frozen and "clip" in arch_config:
                 for name, layer in model.named_children():
                     if name == "blocks":
@@ -87,11 +97,13 @@ class FrozenInTime(BaseModel):
                                     for p in b_layer.parameters():
                                         p.requires_grad = False
                     elif name in CLIP_INIT_LAYERS:
+                        print(f"Freezing {name}")
                         for p in layer.parameters():
                             p.requires_grad = False
-            elif vit_frozen:
-                for p in vit_model.parameters():
-                    p.requires_grad = False
+                    else:
+                        print(f"Skipping {name} for freezing")
+                    
+            #import pdb; pdb.set_trace()
             self.video_model = model
         else:
             raise NotImplementedError(f"{video_params['model']} not implemented")
@@ -104,6 +116,12 @@ class FrozenInTime(BaseModel):
             txt_proj = clip_model.text_projection
             #vid_proj = nn.Identity()
             vid_proj = clip_model.visual_projection
+            if vit_frozen:
+                for p in vid_proj.parameters():
+                    p.requires_grad = False
+            if text_frozen:
+                for p in txt_proj.parameters():
+                    p.requires_grad = False
 
             # vid_proj set to identity       
         elif projection == 'minimal':
@@ -143,7 +161,6 @@ class FrozenInTime(BaseModel):
         self.device = device
 
     def forward(self, data, return_embeds=True):
-        
         text_data = data['text']
         video_data = data['video']
 
@@ -229,14 +246,15 @@ class FrozenInTime(BaseModel):
         return new_state_dict
 
 
-def sim_matrix(a, b, eps=1e-8):
+def sim_matrix(a, b, temperature=torch.Tensor(1), eps=1e-8):
     """
     added eps for numerical stability
     """
+    scale = torch.exp(temperature)
     a_n, b_n = a.norm(dim=1)[:, None], b.norm(dim=1)[:, None]
     a_norm = a / torch.max(a_n, eps * torch.ones_like(a_n))
     b_norm = b / torch.max(b_n, eps * torch.ones_like(b_n))
-    sim_mt = torch.mm(a_norm, b_norm.transpose(0, 1))
+    sim_mt = scale * torch.mm(a_norm, b_norm.transpose(0, 1))
     return sim_mt
 
 def compute_similarity(a, b, a_mask=None, b_mask=None, style='single', eps=1e-8, return_raw=False, temp=0.5):

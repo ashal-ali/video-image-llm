@@ -24,7 +24,7 @@ import torch
 from einops import rearrange, repeat
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 from torch import einsum, nn
-
+from model.patch_dropout import PatchDropout
 
 def attn(q, k, v):
     sim = einsum('b i d, b j d -> b i j', q, k)
@@ -165,8 +165,8 @@ class SpaceTimeBlock(nn.Module):
 
     def forward(self, x, einops_from_space, einops_to_space, einops_from_time, einops_to_time,
                 time_n, space_f):
-
-        time_output = self.timeattn(self.norm3(x), einops_from_time, einops_to_time, n=time_n)
+        a = self.norm3(x)
+        time_output = self.timeattn(a, einops_from_time, einops_to_time, n=time_n)
         time_residual = x + time_output
         space_output = self.attn(self.norm1(time_residual), einops_from_space,
                                  einops_to_space, f=space_f)
@@ -197,9 +197,9 @@ class SpaceTimeTransformer(nn.Module):
     """
 
     def __init__(self, img_size=224, patch_size=16, in_chans=3, num_classes=1000, embed_dim=768, depth=12,
-                 num_heads=12, mlp_ratio=4., qkv_bias=True, qk_scale=None, representation_size=None,
+                 num_heads=12, mlp_ratio=4., qkv_bias=True, qk_scale=None, representation_size=None, patch_drop_rate=0.0,
                  drop_rate=0., attn_drop_rate=0., drop_path_rate=0., hybrid_backbone=None, norm_layer=None,
-                 num_frames=8, time_init='rand', attention_style='frozen-in-time', clip=False):
+                 num_frames=8, time_init='rand', freeze_first_frame=False, attention_style='frozen-in-time', clip=False):
         """
         Args:
             img_size (int, tuple): input image size
@@ -229,6 +229,9 @@ class SpaceTimeTransformer(nn.Module):
         self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
         self.num_frames = num_frames
         self.embed_dim = embed_dim
+        self.patch_drop_rate = patch_drop_rate
+        self.freeze_first_frame = freeze_first_frame
+
         norm_layer = norm_layer or partial(nn.LayerNorm, eps=1e-6)
         if clip:
             norm_layer = partial(nn.LayerNorm, eps=1e-5, elementwise_affine=True)
@@ -241,14 +244,20 @@ class SpaceTimeTransformer(nn.Module):
                 img_size=img_size, patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim, num_frames=num_frames)
         num_patches = self.patch_embed.num_patches
         self.patches_per_frame = num_patches // num_frames
+        self.patches_per_frame_after_dropout = int(self.patches_per_frame * (1 - self.patch_drop_rate))
+
 
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
         self.pos_embed = nn.Parameter(
             torch.zeros(1, self.patches_per_frame + 1,
                         embed_dim))  # remember to take pos_embed[1:] for tiling over time
-        self.temporal_embed = nn.Parameter(torch.zeros(1, num_frames, embed_dim))
+        if freeze_first_frame:
+            self.first_frame_temporal_embed = nn.Parameter(torch.zeros(1, 1, embed_dim), requires_grad=False)
+            self.temporal_embed = nn.Parameter(torch.zeros(1, num_frames - 1, embed_dim))
+        else:
+            self.temporal_embed = nn.Parameter(torch.zeros(1, num_frames, embed_dim))
 
-        self.pos_drop = nn.Dropout(p=drop_rate)
+        self.pos_drop = PatchDropout(p=patch_drop_rate, sampling='tubelet_uniform', tokens_per_frame=self.patches_per_frame, num_frames=num_frames)
 
         if clip:
             self.norm_pre = norm_layer(embed_dim)
@@ -266,7 +275,12 @@ class SpaceTimeTransformer(nn.Module):
                 drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer, time_init=time_init,
                 attention_style=attention_style, act_layer=act_layer)
             for i in range(depth)])
-        self.norm = norm_layer(embed_dim)
+        if self.freeze_first_frame:
+            self.norm = norm_layer(embed_dim)
+            # TODO: Freeze this layer??
+        else:
+            self.norm = norm_layer(embed_dim)
+            # TODO: Add optional norm layer for video path
 
         # Representation layer
         if representation_size:
@@ -317,7 +331,10 @@ class SpaceTimeTransformer(nn.Module):
         self.head = nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
 
     def forward_features(self, x):
-        b, curr_frames, channels, _, _ = x.shape # b 101
+        #import pdb; pdb.set_trace()
+        if x.shape[1] == 1:
+            x = x.squeeze(1)
+        b, num_frames, channels, _, _ = x.shape # b 101
         x = self.patch_embed(x)
         x = x.flatten(2).transpose(2, 1)
         x = x.reshape(b, -1, self.patch_embed.embed_dim)
@@ -329,7 +346,12 @@ class SpaceTimeTransformer(nn.Module):
         cls_embed = self.pos_embed[:, 0, :].unsqueeze(1)
         tile_pos_embed = self.pos_embed[:, 1:, :].repeat(1, self.num_frames, 1)
         # temporal embed needs to be repeated within each frame (this does [1,2,3] --> [1,1,1,2,2,2,3,3,3]...)
-        tile_temporal_embed = self.temporal_embed.repeat_interleave(self.patches_per_frame, 1)
+        if self.freeze_first_frame:
+            
+            temporal_embed = torch.cat([self.first_frame_temporal_embed, self.temporal_embed], dim=1)
+        else:
+            temporal_embed = self.temporal_embed
+        tile_temporal_embed = temporal_embed.repeat_interleave(self.patches_per_frame, 1)
         total_pos_embed = tile_pos_embed + tile_temporal_embed
         total_pos_embed = torch.cat([cls_embed, total_pos_embed], dim=1)
 
@@ -337,9 +359,12 @@ class SpaceTimeTransformer(nn.Module):
         x = x + total_pos_embed[:, :curr_patches]
         x = self.pos_drop(x)
         x = self.norm_pre(x)
-        n = self.patches_per_frame
-        f = curr_frames
-
+        if self.training:
+            n = self.patches_per_frame_after_dropout # account for patch dropout
+        else:
+            n = self.patches_per_frame # use all patches at inference
+        f = num_frames
+        #import pdb; pdb.set_trace()
         for blk in self.blocks:
             x = blk(x, self.einops_from_space, self.einops_to_space, self.einops_from_time,
                     self.einops_to_time,

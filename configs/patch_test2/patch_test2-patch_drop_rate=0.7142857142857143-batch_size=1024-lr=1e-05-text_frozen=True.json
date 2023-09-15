@@ -1,0 +1,99 @@
+{
+    "name": "patch_test2-patch_drop_rate=0.7142857142857143-batch_size=1024-lr=1e-05-text_frozen=True",
+    "n_gpu": 1,
+    "arch": {
+        "type": "FrozenInTime",
+        "args": {
+            "video_params": {
+                "model": "SpaceTimeTransformer",
+                "arch_config": "base_patch16_clip_224",
+                "vit_frozen": true,
+                "num_frames": 4,
+                "pretrained": true,
+                "time_init": "zeros",
+                "patch_drop_rate": 0.7142857142857143
+            },
+            "text_params": {
+                "model": "openai/clip-vit-base-patch16",
+                "pretrained": true,
+                "text_frozen": true,
+                "input": "text"
+            },
+            "projection": "",
+            "load_checkpoint": ""
+        }
+    },
+    "data_loader": [
+        {
+            "type": "TextVideoDataLoader",
+            "args": {
+                "dataset_name": "ConceptualCaptions3M",
+                "data_dir": "/mnt/datasets_mnt/cc3m/final_split",
+                "reader": "cv2",
+                "shuffle": true,
+                "num_workers": 4,
+                "batch_size": 1024,
+                "split": "train",
+                "subsample": 1,
+                "text_params": {
+                    "input": "text"
+                },
+                "video_params": {
+                    "input_res": 224,
+                    "num_frames": 1,
+                    "loading": "lax"
+                }
+            }
+        },
+        {
+            "type": "TextVideoDataLoader",
+            "args": {
+                "dataset_name": "WebVid",
+                "data_dir": "/mnt/datasets_mnt/webvid10m",
+                "shuffle": true,
+                "num_workers": 16,
+                "batch_size": 1024,
+                "split": "train",
+                "cut": "10M",
+                "subsample": 1,
+                "text_params": {
+                    "input": "text"
+                },
+                "video_params": {
+                    "input_res": 224,
+                    "num_frames": 4,
+                    "loading": "lax"
+                }
+            }
+        }
+    ],
+    "optimizer": {
+        "type": "AdamW",
+        "args": {
+            "lr": 1e-05
+        }
+    },
+    "loss": {
+        "type": "NormSoftmaxLoss",
+        "args": {}
+    },
+    "metrics": [
+        "t2v_metrics",
+        "v2t_metrics"
+    ],
+    "trainer": {
+        "epochs": 10,
+        "max_samples_per_epoch": 100000,
+        "save_dir": "/mnt/datasets_mnt/output/exps/patch_test2/patch_test2-patch_drop_rate=0.7142857142857143-batch_size=1024-lr=1e-05-text_frozen=True",
+        "save_period": 1,
+        "verbosity": 2,
+        "monitor": "min val_loss_0",
+        "early_stop": 50,
+        "init_val": false,
+        "neptune": false,
+        "wandb": true
+    },
+    "visualizer": {
+        "type": ""
+    }
+}

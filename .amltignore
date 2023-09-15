@@ -1,0 +1,6 @@
+*.csv 
+*tar.gz
+*.jpeg
+*.log
+*.wandb
+*.txt

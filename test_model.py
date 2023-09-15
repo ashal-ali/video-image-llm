@@ -20,7 +20,7 @@ def get_outputs(our_model):
         model = CLIPModel.from_pretrained("openai/clip-vit-base-patch16")
         pytorch_total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
         print("Huggingface model params:", pytorch_total_params)
-        import pdb; pdb.set_trace()
+        #import pdb; pdb.set_trace()
         processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch16")
 
         url = "http://images.cocodataset.org/val2017/000000007386.jpg"
@@ -42,6 +42,33 @@ def get_outputs(our_model):
 
         print("Huggingface image:", outputs['image_embeds'][0][0:10])
         print("Our image:", image_embeds[0][0:10])
+    opt = torch.optim.Adam(our_model.parameters(), lr=1)
+    print("Testing that backward video pass does not change text or image embeddings")
+    # b, t, c, h, w
+    random_video = torch.randn(1, 4, 3, 224, 224)
+    output = our_model.compute_video(random_video)
+    toy_loss = torch.sum(output)
+    #import pdb; pdb.set_trace()
+    opt.zero_grad()
+    toy_loss.backward()
+    opt.step()
+
+    text_embeds = our_model.compute_text(inputs)
+    # Expand image to 5D tensor (b, t, c, h, w)
+    video_input = inputs['pixel_values'].unsqueeze(1)
+    image_embeds = our_model.compute_video(video_input) 
+    image_embeds = image_embeds / image_embeds.norm(dim=-1, keepdim=True)
+    text_embeds = text_embeds / text_embeds.norm(dim=-1, keepdim=True)
+    o = our_model.text_model(inputs['input_ids'], inputs['attention_mask'])
+    print("Huggingface text:", outputs['text_embeds'][0][0:10])
+    print("Our text:", text_embeds[0][0:10])
+
+    print("Huggingface image:", outputs['image_embeds'][0][0:10])
+    print("Our image:", image_embeds[0][0:10])
+
+
+
+
 
     return outputs
 
@@ -55,7 +82,7 @@ if __name__ == '__main__':
                       help='indices of GPUs to enable (default: all)')
     args.add_argument('-r', '--resume', default=None, type=str,
                     help='path to latest checkpoint (default: None)')
-    #config = ConfigParser(args)
-    #model = get_our_model(config)
-    model = None
+    config = ConfigParser(args)
+    model = get_our_model(config)
+    #model = None
     outputs = get_outputs(model)

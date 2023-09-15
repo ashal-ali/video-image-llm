@@ -1,7 +1,73 @@
 import torch
 import torch.nn.functional as F
 from torch import nn
+import torch.distributed as dist
 
+def sim_matrix(a, b, temperature = 1.0, eps=1e-8):
+    """
+    added eps for numerical stability
+    """
+    scale = torch.exp(temperature)
+    a_n, b_n = a.norm(dim=1)[:, None], b.norm(dim=1)[:, None]
+    a_norm = a / torch.max(a_n, eps * torch.ones_like(a_n))
+    b_norm = b / torch.max(b_n, eps * torch.ones_like(b_n))
+    sim_mt = scale * torch.mm(a_norm, b_norm.transpose(0, 1))
+    print(sim_mt)
+#    import pdb; pdb.set_trace()
+    return sim_mt
+
+class GlobalNormSoftmaxLoss(nn.Module):
+    def __init__(self, temperature=True):
+        super().__init__()
+        self.rank = dist.get_rank()
+    
+    def get_idxs(self, b): # Get idxs for local embeds with batch_size = b
+        #import pdb; pdb.set_trace()
+        j = torch.arange(b)
+        i = self.rank * b + j
+        #idxs = torch.stack([i, j], dim=1)
+        idxs_flipped = torch.stack([j, i], dim=1)
+        return idxs_flipped
+
+    def forward(self, local_videos, local_texts, global_videos, global_texts, temperature):
+        # unwrap global from list to torch tensor
+        global_videos = torch.cat(global_videos)
+        global_texts = torch.cat(global_texts)
+
+        #import pdb; pdb.set_trace()
+
+        # use subset of global videos and texts
+        bs = local_videos.shape[0]
+        vid_subset = global_videos#[bs*self.rank:bs*(self.rank+1)]
+        text_subset = global_texts#[bs*self.rank:bs*(self.rank+1)]
+        #print(f"Grabbing subset of global videos and texts from {bs*self.rank} to {bs*(self.rank+1)} for rank {self.rank}")
+
+        # compute similarity matrix
+        #print(f"Computing similarity between: {local_videos.shape} and {text_subset.shape}")
+        vid_sim = sim_matrix(local_videos, text_subset, temperature)
+        text_sim = sim_matrix(local_texts, vid_subset, temperature)
+
+        #print("Video similarity matrix shape:", vid_sim.shape)
+        #print("Text similarity matrix shape:", text_sim.shape)
+
+        # compute loss
+        i_logsm = F.log_softmax(vid_sim, dim=1)
+        j_logsm = F.log_softmax(text_sim, dim=1)
+
+        # sum over positives (get idxs)
+        idxs = self.get_idxs(bs) # TODO: Cache at beginning? 
+        #print(f"idxs: {idxs}")
+        #print("i_logsm:", i_logsm.shape)
+        #print("j_logsm:", j_logsm.shape)
+        #import pdb; pdb.set_trace()
+        vals_i = i_logsm[idxs[:, 0], idxs[:, 1]]
+        loss_i = vals_i.sum() / len(idxs)
+
+        vals_j = j_logsm[idxs[:, 0], idxs[:, 1]]
+        loss_j = vals_j.sum() / len(idxs)
+
+        return - loss_i - loss_j
+    
 
 class NormSoftmaxLoss(nn.Module):
     def __init__(self, temperature=0.05):

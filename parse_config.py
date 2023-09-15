@@ -29,16 +29,29 @@ class ConfigParser:
         else:
             self.resume = Path(args.resume)
             resume_cfg_fname = self.resume.parent / 'config.json'
-            config = read_json(resume_cfg_fname)
+            if resume_cfg_fname.is_file():
+                config = read_json(resume_cfg_fname)
+            else:
+                # Use config from args
+                print(f"WARNING: No config file found in {resume_cfg_fname}, using config from args")
+                config = read_json(Path(args.config))
             if args.config is not None:
                 config.update(read_json(Path(args.config)))
 
         # load config file and apply custom cli options
         self._config = _update_config(config, options, args)
-
+        
+        # update number of examples in epoch to be consistent between DP and DDP (no effect if not DDP)
+        try:
+            if self._config['strat'] == 'ddp':
+                n_nodes = self._config['n_node']
+                n_gpus = self._config['n_gpu']
+                self._config['trainer']['max_samples_per_epoch'] = self._config['trainer']['max_samples_per_epoch'] // (n_nodes * n_gpus)
+        except:
+            print("WARNING: No strategy specified in config file, using DataParallel by default")
         # set save_dir where trained model and log will be saved.
         save_dir = Path(self.config['trainer']['save_dir'])
-        timestamp = datetime.now().strftime(r'%m%d_%H%M%S') if timestamp else ''
+        timestamp = datetime.now().strftime(r'%y_%m_%d_%H%M%S') if timestamp else ''
 
         exper_name = self.config['name']
         self._save_dir = save_dir / 'models' / exper_name / timestamp
@@ -61,7 +74,13 @@ class ConfigParser:
 
         # save updated config file to the checkpoint dir
         if not test:
-            write_json(self.config, self.save_dir / 'config.json')
+            try:
+                if self.config['strat'] == 'ddp':
+                    #import pdb; pdb.set_trace()
+                    #global_rank = torch.distributed.get_rank()
+                    a = None # pass
+            except:
+                write_json(self.config, self.save_dir / 'config.json')
 
             # configure logging module
             setup_logging(self.log_dir)

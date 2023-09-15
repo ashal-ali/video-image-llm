@@ -34,7 +34,7 @@
                         "shuffle": true,
                         "num_workers": 4,
                         "batch_size": 2,
-                        "split": "train_1k",
+                        "split": "train",
                         "subsample": 1,
                         "text_params": {
                             "input": "text"
@@ -42,6 +42,27 @@
                         "video_params": {
                             "input_res": 224,
                             "num_frames": 1,
+                            "loading": "lax"
+                        }
+                    }
+                },
+                {
+                    "type": "TextVideoDataLoader",
+                    "args":{
+                        "dataset_name": "WebVid",
+                        "data_dir": "/mnt/datasets_mnt/webvid10m",
+                        "shuffle": true,
+                        "num_workers": 16,
+                        "batch_size": 64,
+                        "split": "train",
+                        "cut": "10M",
+                        "subsample": 1,
+                        "text_params": {
+                            "input": "text"
+                        },
+                        "video_params": {
+                            "input_res": 224,
+                            "num_frames": 4,
                             "loading": "lax"
                         }
                     }
@@ -63,8 +84,8 @@
         "v2t_metrics"
      ],
     "trainer": {
-        "epochs": 10,
-        "max_samples_per_epoch": 1000,
+        "epochs": 100,
+        "max_samples_per_epoch": 100000,
         "save_dir": "/mnt/datasets_mnt/output/LiT",
         "save_period": 1,
         "verbosity": 2,
@@ -72,7 +93,7 @@
         "early_stop": 50,
         "init_val": false,
         "neptune": false,
-        "wandb": false
+        "wandb": true
     },
     "visualizer": {
         "type": ""
