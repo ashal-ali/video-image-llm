@@ -9,11 +9,11 @@
             "video_params": {
                 "model": "SpaceTimeTransformer",
                 "arch_config": "base_patch16_clip_224",
-                "vit_frozen": true,
-                "num_frames": 4,
+                "vit_frozen": false,
+                "num_frames": 1,
                 "pretrained": true,
                 "time_init": "zeros",
-                "patch_drop_rate": 0.9,
+                "patch_drop_rate": 0.5,
                 "freeze_first_frame": false
             },
             "text_params": {
