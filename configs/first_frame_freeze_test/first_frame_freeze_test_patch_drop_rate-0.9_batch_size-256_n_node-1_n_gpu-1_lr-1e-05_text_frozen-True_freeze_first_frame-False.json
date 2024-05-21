@@ -30,8 +30,8 @@
         {
             "type": "TextVideoDataLoader",
             "args": {
-                "dataset_name": "ConceptualCaptions3M",
-                "data_dir": "/mnt/datasets_mnt/cc3m/final_split",
+                "dataset_name": "MedClip",
+                "data_dir": "/vision/u/zanedurante/image_datasets/med_clip/",
                 "reader": "cv2",
                 "shuffle": true,
                 "num_workers": 4,
@@ -51,8 +51,8 @@
         {
             "type": "TextVideoDataLoader",
             "args": {
-                "dataset_name": "WebVid",
-                "data_dir": "/mnt/datasets_mnt/webvid10m",
+                "dataset_name": "MedClip",
+                "data_dir": "/vision/u/zanedurante/image_datasets/med_clip/",
                 "shuffle": true,
                 "num_workers": 16,
                 "batch_size": 256,
